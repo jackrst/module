@@ -1,6 +1,4 @@
 local Players = game:GetService("Players")
-local TeleportService = game:GetService("TeleportService")
-
 local LocalPlayer = (function()
 	local LocalPlayer = Players.LocalPlayer or (function()
 		repeat task.wait() until Players.LocalPlayer
@@ -8,37 +6,6 @@ local LocalPlayer = (function()
 	end)()
 	return LocalPlayer:WaitForChild("PlayerGui"):WaitForChild("MenuScreenGui", 9e9) and LocalPlayer
 end)()
-
--- Rejoin helper: teleports back into the same server instead of kicking
-local function RejoinGame(reason)
-	-- Prevent double-rejoin loops
-	if getgenv().ns__PhantomWare__Rejoining then
-		return
-	end
-	getgenv().ns__PhantomWare__Rejoining = true
-	getgenv().ns__PhantomWare__Executed = false
-
-	-- Try to notify the user (some executors support this, some don't)
-	pcall(function()
-		if StarterGui and StarterGui.SetCore and StarterGui:FindFirstChild("RobloxPromptGui") then
-			-- Ignored - just try notify
-		end
-	end)
-	warn("[PhantomWare] Rejoining server: " .. tostring(reason))
-
-	-- Give a moment so the warn is visible / cleanup can run
-	task.wait(0.5)
-
-	-- Attempt same-server rejoin; if that fails, fall back to a fresh server
-	local ok = pcall(function()
-		TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
-	end)
-	if not ok then
-		pcall(function()
-			TeleportService:Teleport(game.PlaceId, LocalPlayer)
-		end)
-	end
-end
 
 local Method, ns__require = "Unknown", nil
 if typeof(getrenv or get_renv) == "function" then
@@ -73,8 +40,10 @@ if typeof(ns__require) ~= "function" then
 		task.wait(0.5)
 	end
 
-	if not ModuleCache then
-		RejoinGame("Module cache not found")
+	if not ModuleCache  then
+		getgenv().ns__PhantomWare__Executed = false
+		pcall(setfflag or set_fflag, "DebugRunParallelLuaOnMainThread", "True")
+		LocalPlayer:Kick("Error while accessing Game Modules, try rejoining through the desktop app, if this issue persists, please make a ticket in the discord server immediately.\ndiscord.gg/DwRT2nH93D" .. (ExecutorName and (" | " .. ExecutorName) or ""))
 		return nil
 	end
 
@@ -84,7 +53,9 @@ if typeof(ns__require) ~= "function" then
 
 	Method = "fenv.getgc"
 elseif not ns__require then
-	RejoinGame("shared.require not available")
+	getgenv().ns__PhantomWare__Executed = false
+	pcall(setfflag or set_fflag, "DebugRunParallelLuaOnMainThread", "True")
+	LocalPlayer:Kick("Error while accessing Game Modules, try rejoining through the desktop app, if this issue persists, please make a ticket in the discord server immediately.\ndiscord.gg/DwRT2nH93D" .. (ExecutorName and (" | " .. ExecutorName) or ""))
 	return nil
 end
 
@@ -99,8 +70,7 @@ return {Players = Players, LocalPlayer = LocalPlayer, Method = Method, ExecutorN
 			return
 		end
 
-		warn("[PhantomWare] Failed to require module: " .. Module .. " (" .. tostring(Result) .. ")")
-		return nil
+		return LocalPlayer:Kick("Failed to require Module '" .. Module .. " ', error[" .. Result .. "]\nPlease make a ticket in the discord server immediately.\ndiscord.gg/DwRT2nH93D")
 	end
 
 	local Source = __internal()
@@ -108,7 +78,8 @@ return {Players = Players, LocalPlayer = LocalPlayer, Method = Method, ExecutorN
 		local StartTime = os.clock()
 		while true do
 			if os.clock() - StartTime >= 5 then
-				RejoinGame("Module timeout: " .. Module)
+				LocalPlayer:Kick("Module Access Timeout, please make a ticket in the discord server immediately.\ndiscord.gg/DwRT2nH93D\nDebug Info: " .. tostring(ExecutorName) .. " | " .. Module .. ": " .. (ModuleCache and "fenv.getgc" or "shared.require"))
+				pcall(setclipboard, "discord.gg/DwRT2nH93D")
 				break
 			end
 
