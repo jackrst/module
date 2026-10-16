@@ -1,21 +1,35 @@
 --[[
-    gamesense.win — Menu Library v2
-    Rewritten for polish: animated open/close, drawn icons, close button.
+    gamesense.win — Library v3
+    Fixes: ColorSequence crash, executor capability errors, menu toggle.
+    Adds: animated loading screen with gamesense.win branding.
 ]]
 
-local cloneref = cloneref or clone_ref or function(o) return o end
-local function cref(o) local s, r = pcall(cloneref, o); return s and r or o end
+-- ============================================================================
+-- SAFE SERVICES
+-- ============================================================================
+local _cloneref = cloneref or clone_ref
+local function cref(o)
+    if not _cloneref then return o end
+    local ok, r = pcall(_cloneref, o)
+    return ok and r or o
+end
 
-local UIS      = game:GetService("UserInputService")
-local Tween    = game:GetService("TweenService")
-local TextSvc  = game:GetService("TextService")
-local Http     = game:GetService("HttpService")
-local RS       = game:GetService("RunService")
-local Players  = game:GetService("Players")
-local Teams    = game:GetService("Teams")
-local Render   = RS.RenderStepped
-local LP       = Players.LocalPlayer
-local Mouse    = cref(LP:GetMouse())
+local UIS     = game:GetService("UserInputService")
+local Tween   = game:GetService("TweenService")
+local TextSvc = game:GetService("TextService")
+local Http    = game:GetService("HttpService")
+local RS      = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Teams   = game:GetService("Teams")
+local Render  = RS.RenderStepped
+local LP      = Players.LocalPlayer
+local Mouse   = cref(LP:GetMouse())
+
+local function safeCoreGui()
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then return cg end
+    return LP:WaitForChild("PlayerGui")
+end
 
 local GUI = cref(Instance.new("ScreenGui"))
 GUI.Name = "gamesense_" .. tostring(math.random(100000, 999999))
@@ -23,7 +37,7 @@ GUI.ZIndexBehavior = Enum.ZIndexBehavior.Global
 GUI.IgnoreGuiInset = true
 GUI.ResetOnSpawn = false
 GUI.DisplayOrder = 9999
-GUI.Parent = cref(game:GetService("CoreGui"))
+GUI.Parent = safeCoreGui()
 
 local Toggles, Options = {}, {}
 
@@ -83,13 +97,13 @@ local Library = {
 
     CornerRadius = 0,
     Animations = true,
-    AnimOpen = 0.28,
-    AnimClose = 0.18,
+    AnimOpen = 0.3,
+    AnimClose = 0.2,
 
     OpenedFrames = {}, DependencyBoxes = {}, ModeSelectOuters = {},
     ScreenGui = GUI,
     NotifyOnError = false,
-    Version = "2.0.0",
+    Version = "3.0.0",
     Brand = "gamesense.win",
 
     Sounds = { Enabled = true, Click = "rbxassetid://6895079853", Volume = 0.28 },
@@ -97,7 +111,11 @@ local Library = {
 
 Library.SafeCallback = function(self, f, ...)
     if not f then return end
-    if not Library.NotifyOnError then return f(...) end
+    if not Library.NotifyOnError then
+        local ok, err = pcall(f, ...)
+        if not ok then warn("[gamesense] callback error:", err) end
+        return
+    end
     local ok, err = pcall(f, ...)
     if not ok then Library:Notify(tostring(err), 3) end
 end
@@ -173,6 +191,26 @@ function Library:Tween(inst, props, speed, style, dir)
     return t
 end
 
+-- FIXED: safe color sequence builder — guarantees last keypoint is exactly 1.0
+function Library:SafeColorSequence(fromColor, toColor)
+    return ColorSequence.new({
+        ColorSequenceKeypoint.new(0, fromColor),
+        ColorSequenceKeypoint.new(1, toColor),
+    })
+end
+
+-- FIXED: exact-end hue gradient for color pickers
+function Library:HueGradient()
+    local seq = {}
+    for i = 0, 20 do
+        local h = i / 20
+        seq[#seq + 1] = ColorSequenceKeypoint.new(h, Color3.fromHSV(h, 1, 1))
+    end
+    -- Safety clamp: guarantee exact 1.0
+    seq[#seq] = ColorSequenceKeypoint.new(1, Color3.fromHSV(1, 1, 1))
+    return ColorSequence.new(seq)
+end
+
 function Library:GetTextBounds(text, font, size, res)
     local b = TextSvc:GetTextSize(text, size, font, res or Vector2.new(1920, 1080))
     return b.X, b.Y
@@ -239,13 +277,16 @@ function Library:UpdateDependencyBoxes()
 end
 function Library:PlaySound(id, pitch)
     if not Library.Sounds.Enabled or not id or id == "" then return end
-    local s = cref(Instance.new("Sound"))
-    s.SoundId = id; s.Volume = Library.Sounds.Volume; s.PlaybackSpeed = pitch or 1
-    s.Parent = GUI; s:Play()
-    task.delay(2, function() pcall(function() s:Destroy() end) end)
+    local ok, s = pcall(function()
+        local snd = cref(Instance.new("Sound"))
+        snd.SoundId = id; snd.Volume = Library.Sounds.Volume; snd.PlaybackSpeed = pitch or 1
+        snd.Parent = GUI; snd:Play()
+        return snd
+    end)
+    if ok and s then task.delay(2, function() pcall(function() s:Destroy() end) end) end
 end
 function Library:AttemptSave()
-    if Library.SaveManager then Library.SaveManager:Save() end
+    if Library.SaveManager then pcall(function() Library.SaveManager:Save() end) end
 end
 
 function Library:AddToolTip(text, hover)
@@ -280,127 +321,219 @@ end
 GUI.DescendantRemoving:Connect(function(i) if Library.RegistryMap[i] then Library:RemoveFromRegistry(i) end end)
 
 -- ============================================================================
--- ICON SYSTEM — all drawn with Frames, no asset IDs
+-- LOADING SCREEN — gamesense.win branded intro
 -- ============================================================================
-local function DrawIcon(name, size, parent, color)
-    local w = size
-    local holder = Library:Create("Frame", {
-        BackgroundTransparency = 1, Size = UDim2.fromOffset(w, w),
-        Parent = parent,
+function Library:ShowLoadingScreen(duration, onComplete)
+    duration = duration or 3.0
+    local ls = Library:Create("Frame", {
+        Name = "LoadingScreen",
+        BackgroundColor3 = Color3.fromRGB(10, 10, 10),
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1),
+        ZIndex = 10000, Parent = GUI,
     })
-    local parts = {}
-    local function add(inst) table.insert(parts, inst); return inst end
-    local function line(x, y, ww, hh, rot)
-        return add(Library:Create("Frame", {
-            BackgroundColor3 = color, BorderSizePixel = 0,
-            AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.fromOffset(x, y),
-            Size = UDim2.fromOffset(ww, hh), Rotation = rot or 0,
-            Parent = holder,
-        }))
-    end
-    local function stroke(x, y, ww, hh)
-        local f = Library:Create("Frame", {
+
+    -- Subtle radial vignette
+    local vig = Library:Create("Frame", {
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        ZIndex = 10001, Parent = ls,
+    })
+    local vigGrad = Library:Create("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.55),
+            NumberSequenceKeypoint.new(1, 0.95),
+        }),
+        Rotation = 90, Parent = vig,
+    })
+
+    -- Center brand stack
+    local stack = Library:Create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(600, 220),
+        ZIndex = 10002, Parent = ls,
+    })
+
+    -- Green "gamesense" text
+    local gs = Library:Create("TextLabel", {
+        BackgroundTransparency = 1,
+        Font = Library.FontBold,
+        TextSize = 52,
+        Text = "gamesense",
+        TextColor3 = Library.Accent,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        Position = UDim2.new(0.5, 0, 0, 30),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Size = UDim2.new(0, 300, 0, 70),
+        TextTransparency = 1,
+        ZIndex = 10003, Parent = stack,
+    })
+    Library:AddToRegistry(gamesense, { TextColor3 = "Accent" })
+
+    -- White ".win" text
+    local win = Library:Create("TextLabel", {
+        BackgroundTransparency = 1,
+        Font = Library.FontBold,
+        TextSize = 52,
+        Text = ".win",
+        TextColor3 = Color3.fromRGB(240, 240, 240),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        Position = UDim2.new(0.5, 0, 0, 30),
+        AnchorPoint = Vector2.new(0, 0.5),
+        Size = UDim2.new(0, 200, 0, 70),
+        TextTransparency = 1,
+        ZIndex = 10003, Parent = stack,
+    })
+
+    -- Underline accent bar
+    local underline = Library:Create("Frame", {
+        BackgroundColor3 = Library.Accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0, 78),
+        Size = UDim2.new(0, 0, 0, 2),
+        ZIndex = 10003, Parent = stack,
+    })
+
+    -- Status text
+    local status = Library:Create("TextLabel", {
+        BackgroundTransparency = 1,
+        Font = Library.FontMed,
+        TextSize = 13,
+        Text = "initializing",
+        TextColor3 = Library.FontMuted,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0, 130),
+        Size = UDim2.new(0, 400, 0, 20),
+        TextTransparency = 1,
+        ZIndex = 10003, Parent = stack,
+    })
+
+    -- Progress bar
+    local barOuter = Library:Create("Frame", {
+        BackgroundColor3 = Color3.fromRGB(28, 28, 28),
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0, 168),
+        Size = UDim2.new(0, 360, 0, 3),
+        BackgroundTransparency = 1,
+        ZIndex = 10003, Parent = stack,
+    })
+    local barFill = Library:Create("Frame", {
+        BackgroundColor3 = Library.Accent,
+        BorderSizePixel = 0,
+        Size = UDim2.new(0, 0, 1, 0),
+        ZIndex = 10004, Parent = barOuter,
+    })
+
+    -- Version bottom-right
+    local ver = Library:Create("TextLabel", {
+        BackgroundTransparency = 1,
+        Font = Library.FontMed,
+        TextSize = 12,
+        Text = "v" .. Library.Version,
+        TextColor3 = Library.FontDim,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        AnchorPoint = Vector2.new(1, 1),
+        Position = UDim2.new(1, -24, 1, -20),
+        Size = UDim2.new(0, 120, 0, 20),
+        TextTransparency = 1,
+        ZIndex = 10003, Parent = ls,
+    })
+
+    -- Status sequence
+    local statusMessages = {
+        "initializing",
+        "loading library",
+        "preparing interface",
+        "ready",
+    }
+
+    -- Fade in brand text
+    task.spawn(function()
+        task.wait(0.1)
+        Tween:Create(gs, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { TextTransparency = 0 }):Play()
+        Tween:Create(win, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { TextTransparency = 0 }):Play()
+        task.wait(0.35)
+        -- Underline grows
+        local totalWidth = gs.TextBounds.X + win.TextBounds.X
+        Tween:Create(underline, TweenInfo.new(0.7, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            Size = UDim2.new(0, totalWidth, 0, 2),
+        }):Play()
+        Tween:Create(barOuter, TweenInfo.new(0.4, Enum.EasingStyle.Quad), { BackgroundTransparency = 0 }):Play()
+        Tween:Create(status, TweenInfo.new(0.4, Enum.EasingStyle.Quad), { TextTransparency = 0 }):Play()
+        Tween:Create(ver, TweenInfo.new(0.4, Enum.EasingStyle.Quad), { TextTransparency = 0 }):Play()
+    end)
+
+    -- Progress + status animation
+    task.spawn(function()
+        local start = tick()
+        local statusIdx = 1
+        local statusSwitchTimes = {}
+        for i = 1, #statusMessages do
+            statusSwitchTimes[i] = (i / #statusMessages) * duration
+        end
+        while true do
+            local elapsed = tick() - start
+            if elapsed >= duration then break end
+            local pct = math.clamp(elapsed / duration, 0, 1)
+            -- Ease-out progress
+            local eased = 1 - (1 - pct) ^ 3
+            barFill.Size = UDim2.new(eased, 0, 1, 0)
+            for i = #statusSwitchTimes, 1, -1 do
+                if elapsed >= statusSwitchTimes[i] and statusIdx < i + 1 then
+                    local newText = statusMessages[i + 1] or statusMessages[#statusMessages]
+                    if newText ~= status.Text then
+                        status.Text = newText
+                        status.TextTransparency = 1
+                        Tween:Create(status, TweenInfo.new(0.2), { TextTransparency = 0 }):Play()
+                    end
+                    statusIdx = i + 1
+                    break
+                end
+            end
+            Render:Wait()
+        end
+        barFill.Size = UDim2.new(1, 0, 1, 0)
+        status.Text = "ready"
+    end)
+
+    -- Fade out and destroy
+    task.spawn(function()
+        task.wait(duration + 0.2)
+        local fadeTime = 0.45
+        Tween:Create(gs, TweenInfo.new(fadeTime, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { TextTransparency = 1 }):Play()
+        Tween:Create(win, TweenInfo.new(fadeTime, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { TextTransparency = 1 }):Play()
+        Tween:Create(status, TweenInfo.new(fadeTime, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { TextTransparency = 1 }):Play()
+        Tween:Create(ver, TweenInfo.new(fadeTime, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { TextTransparency = 1 }):Play()
+        Tween:Create(underline, TweenInfo.new(fadeTime, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, 2),
+        }):Play()
+        Tween:Create(barOuter, TweenInfo.new(fadeTime * 0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
             BackgroundTransparency = 1,
-            AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.fromOffset(x, y),
-            Size = UDim2.fromOffset(ww, hh), Parent = holder,
-        })
-        Library:Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = f })
-        local s = Library:Create("UIStroke", { Color = color, Thickness = 1.5, Parent = f })
-        add(f); add(s)
-        return f, s
-    end
-    local cx, cy = w / 2, w / 2
-
-    if name == "Aiming" then
-        -- Crosshair
-        line(cx, 3, 1.5, w * 0.22)                        -- top
-        line(cx, w - 3, 1.5, w * 0.22)                    -- bottom
-        line(3, cy, w * 0.22, 1.5)                        -- left
-        line(w - 3, cy, w * 0.22, 1.5)                    -- right
-        local dot = Library:Create("Frame", {
-            BackgroundColor3 = color, BorderSizePixel = 0,
-            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
-            Size = UDim2.fromOffset(3, 3), Parent = holder,
-        })
-        add(dot)
-    elseif name == "Visuals" then
-        -- Eye
-        local eye = stroke(cx, cy, w * 0.9, w * 0.5)
-        local pupil = Library:Create("Frame", {
-            BackgroundColor3 = color, BorderSizePixel = 0,
-            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
-            Size = UDim2.fromOffset(4, 4), Parent = holder,
-        })
-        Library:Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = pupil })
-        add(pupil)
-    elseif name == "World" then
-        -- Sun/globe: circle + rays
-        stroke(cx, cy, w * 0.55, w * 0.55)
-        for i = 0, 7 do
-            local ang = math.rad(i * 45)
-            local r1 = w * 0.38
-            local r2 = w * 0.47
-            local x1 = cx + math.cos(ang) * r1
-            local y1 = cy + math.sin(ang) * r1
-            local x2 = cx + math.cos(ang) * r2
-            local y2 = cy + math.sin(ang) * r2
-            local l = Library:Create("Frame", {
-                BackgroundColor3 = color, BorderSizePixel = 0,
-                AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.fromOffset((x1 + x2) / 2, (y1 + y2) / 2),
-                Size = UDim2.fromOffset(1.5, 2.5),
-                Rotation = math.deg(ang) - 90,
-                Parent = holder,
-            })
-            add(l)
-        end
-    elseif name == "Miscellaneous" then
-        -- 2x2 grid of squares
-        local q = w * 0.28
-        local gap = w * 0.08
-        local positions = {
-            { cx - gap/2 - q, cy - gap/2 - q },
-            { cx + gap/2,      cy - gap/2 - q },
-            { cx - gap/2 - q, cy + gap/2 },
-            { cx + gap/2,      cy + gap/2 },
-        }
-        for _, p in next, positions do
-            local sq = Library:Create("Frame", {
-                BackgroundColor3 = color, BorderSizePixel = 0,
-                Position = UDim2.fromOffset(p[1], p[2]),
-                Size = UDim2.fromOffset(q, q),
-                Parent = holder,
-            })
-            add(sq)
-        end
-    elseif name == "Settings" then
-        -- Sliders: 3 lines with offset dots
-        local rows = { { 3, 0.3 }, { 8, 0.7 }, { 13, 0.5 } }
-        for _, r in ipairs(rows) do
-            local yy = r[1] + 1
-            line(cx, yy, w * 0.7, 1.2)
-            local dotX = w * (0.15 + 0.7 * r[2])
-            local dot = Library:Create("Frame", {
-                BackgroundColor3 = color, BorderSizePixel = 0,
-                AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.fromOffset(dotX, yy),
-                Size = UDim2.fromOffset(3.5, 3.5), Parent = holder,
-            })
-            Library:Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = dot })
-            add(dot)
-        end
-    else
-        -- fallback
-        stroke(cx, cy, w * 0.5, w * 0.5)
-    end
-
-    return holder, parts
+        }):Play()
+        Tween:Create(barFill, TweenInfo.new(fadeTime * 0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            BackgroundTransparency = 1,
+        }):Play()
+        -- Fade whole screen
+        Tween:Create(ls, TweenInfo.new(fadeTime, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            BackgroundTransparency = 1,
+        }):Play()
+        task.wait(fadeTime + 0.05)
+        ls:Destroy()
+        if onComplete then onComplete() end
+    end)
 end
 
 -- ============================================================================
--- BASE ADDONS (ColorPicker / KeyPicker)
+-- BASE ADDONS
 -- ============================================================================
 local BaseAddons = {}
 do
@@ -479,11 +612,12 @@ do
             BorderColor3 = Color3.new(0,0,0), BorderMode = Enum.BorderMode.Outline,
             Size = UDim2.new(1, 0, 0, 2), ZIndex = 305, Parent = hueInner,
         })
-        do
-            local seq = {}
-            for h = 0, 1, 0.05 do table.insert(seq, ColorSequenceKeypoint.new(h, Color3.fromHSV(h, 1, 1))) end
-            Library:Create("UIGradient", { Color = ColorSequence.new(seq), Rotation = 90, Parent = hueInner })
-        end
+        -- FIXED: Safe hue gradient
+        Library:Create("UIGradient", {
+            Color = Library:HueGradient(),
+            Rotation = 90, Parent = hueInner,
+        })
+
         local function mkInput(pos, width, ph, text)
             local o = Library:Create("Frame", {
                 BorderColor3 = Library.Border, Position = pos,
@@ -553,8 +687,6 @@ do
             end
             pickerOuter.Visible = true
             Library.OpenedFrames[pickerOuter] = true
-            pickerOuter.BackgroundTransparency = 1
-            Library:Tween(pickerOuter, { BackgroundTransparency = 0 })
         end
         function CP:Hide()
             pickerOuter.Visible = false
@@ -1008,19 +1140,18 @@ do
         })
         Library:AddToRegistry(boxOuter, { BorderColor3 = "Border" })
         Library:AddToRegistry(boxInner, { BackgroundColor3 = "ControlBG", BorderColor3 = "Outline" })
-        -- checkmark: two rotated strokes, centered via AnchorPoint
         local chk = Library:Create("Frame", {
             BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
             Visible = false, ZIndex = 9, Parent = boxInner,
         })
-        local c1 = Library:Create("Frame", {
+        Library:Create("Frame", {
             BackgroundColor3 = Color3.fromRGB(15,15,15), BorderSizePixel = 0,
             AnchorPoint = Vector2.new(0.5, 0.5),
             Position = UDim2.new(0.32, 0, 0.55, 0),
             Size = UDim2.new(0, 2, 0, 4.5),
             Rotation = 45, ZIndex = 10, Parent = chk,
         })
-        local c2 = Library:Create("Frame", {
+        Library:Create("Frame", {
             BackgroundColor3 = Color3.fromRGB(15,15,15), BorderSizePixel = 0,
             AnchorPoint = Vector2.new(0.5, 0.5),
             Position = UDim2.new(0.62, 0, 0.45, 0),
@@ -1513,6 +1644,7 @@ do
     end
 
     function Funcs:CreateConfigurationManager(BasePath, Ext, TablesToSave)
+        -- FIXED: all file ops wrapped in pcall so executors that lack capabilities don't crash
         local CF = BasePath .. "/Configs"
         local AF = BasePath .. "/Autoload" .. Ext
         local CM = { CurrentConfigurationProfile = "", Buttons = {} }
@@ -1533,38 +1665,45 @@ do
             else return d end
         end
         local function gc()
-            if not isfolder(CF) then makefolder(CF) end
-            local t = {}
-            for _, fp in ipairs(listfiles(CF)) do
-                local n = fp:match("([^/\\]+)$")
-                if n and n:match("%" .. Ext .. "$") then table.insert(t, (n:gsub("%" .. Ext .. "$", ""))) end
-            end
-            return t
+            local ok, result = pcall(function()
+                if not isfolder(CF) then makefolder(CF) end
+                local t = {}
+                for _, fp in ipairs(listfiles(CF)) do
+                    local n = fp:match("([^/\\]+)$")
+                    if n and n:match("%" .. Ext .. "$") then table.insert(t, (n:gsub("%" .. Ext .. "$", ""))) end
+                end
+                return t
+            end)
+            return ok and result or {}
         end
         local function lp(name)
-            local p = CF .. "/" .. name .. Ext
-            local content = isfile(p) and readfile(p)
-            if not content or #content <= 0 then return end
-            local ok, data = pcall(Http.JSONDecode, Http, content)
-            if not ok then return end
-            for _, conf in ipairs(TablesToSave) do
-                for setting in next, conf do
-                    if string.find(string.lower(setting), "inactive") then continue end
-                    local v = data[setting]
-                    if v == nil then continue end
-                    conf[setting] = dr(conf[setting], v)
-                    task.defer(function()
-                        if Toggles[setting] then Toggles[setting]:SetValue(conf[setting])
-                        elseif Options[setting] then
-                            if Options[setting].Type == "ColorPicker" then
-                                Options[setting]:SetValueRGB(conf[setting], data[setting .. "Transparency"])
-                            elseif Options[setting].Type == "KeyPicker" then
-                                Options[setting]:SetValue({conf[setting], data[setting .. "Mode"] or "Toggle"})
-                            else Options[setting]:SetValue(conf[setting]) end
-                        end
-                    end)
+            local ok = pcall(function()
+                local p = CF .. "/" .. name .. Ext
+                if not isfile(p) then return end
+                local content = readfile(p)
+                if not content or #content <= 0 then return end
+                local ok2, data = pcall(Http.JSONDecode, Http, content)
+                if not ok2 then return end
+                for _, conf in ipairs(TablesToSave) do
+                    for setting in next, conf do
+                        if string.find(string.lower(setting), "inactive") then continue end
+                        local v = data[setting]
+                        if v == nil then continue end
+                        conf[setting] = dr(conf[setting], v)
+                        task.defer(function()
+                            if Toggles[setting] then Toggles[setting]:SetValue(conf[setting])
+                            elseif Options[setting] then
+                                if Options[setting].Type == "ColorPicker" then
+                                    Options[setting]:SetValueRGB(conf[setting], data[setting .. "Transparency"])
+                                elseif Options[setting].Type == "KeyPicker" then
+                                    Options[setting]:SetValue({conf[setting], data[setting .. "Mode"] or "Toggle"})
+                                else Options[setting]:SetValue(conf[setting]) end
+                            end
+                        end)
+                    end
                 end
-            end
+            end)
+            return ok
         end
         self:AddInput("ConfigurationInput", {
             Text = "Profile Name", Default = "", Placeholder = "name",
@@ -1576,7 +1715,8 @@ do
                 CM.CurrentConfigurationProfile = v
                 if Options.ConfigurationInput then Options.ConfigurationInput:SetValue(v) end
                 if CM.Buttons.SetAutoload and CM.Buttons.RemoveAutoload then
-                    local auto = isfile(AF) and readfile(AF) == v
+                    local auto = false
+                    pcall(function() auto = isfile(AF) and readfile(AF) == v end)
                     CM.Buttons.SetAutoload.Outer.Visible = not auto
                     CM.Buttons.RemoveAutoload.Outer.Visible = auto
                 end
@@ -1585,71 +1725,81 @@ do
         local function save()
             local n = CM.CurrentConfigurationProfile
             if n == "" then return end
-            local data = {}
-            for _, tbl in ipairs(TablesToSave) do
-                for s, v in next, tbl do
-                    if s == "MenuToggleKeybind" then continue end
-                    data[s] = sv(v)
+            local ok = pcall(function()
+                local data = {}
+                for _, tbl in ipairs(TablesToSave) do
+                    for s, v in next, tbl do
+                        if s == "MenuToggleKeybind" then continue end
+                        data[s] = sv(v)
+                    end
                 end
-            end
-            for i, o in next, Library.Options do
-                if type(o) == "table" and type(o.Type) == "string" then
-                    if o.Type == "KeyPicker" and type(o.Mode) == "string" then data[i .. "Mode"] = o.Mode
-                    elseif o.Type == "ColorPicker" then data[i .. "Transparency"] = o.Transparency or 0 end
+                for i, o in next, Library.Options do
+                    if type(o) == "table" and type(o.Type) == "string" then
+                        if o.Type == "KeyPicker" and type(o.Mode) == "string" then data[i .. "Mode"] = o.Mode
+                        elseif o.Type == "ColorPicker" then data[i .. "Transparency"] = o.Transparency or 0 end
+                    end
                 end
+                if not isfolder(CF) then makefolder(CF) end
+                writefile(CF .. "/" .. n .. Ext, Http:JSONEncode(data))
+            end)
+            if ok then
+                Library:Notify("Saved profile: " .. n, 3)
+                Options.ConfigurationDropdown:SetValues(gc())
+                Options.ConfigurationDropdown:SetValue(n)
+            else
+                Library:Notify("Failed to save: " .. n, 3)
             end
-            if not isfolder(CF) then makefolder(CF) end
-            writefile(CF .. "/" .. n .. Ext, Http:JSONEncode(data))
-            Library:Notify("Saved profile: " .. n, 3)
-            Options.ConfigurationDropdown:SetValues(gc())
-            Options.ConfigurationDropdown:SetValue(n)
         end
         self:AddButton({ Text = "Save", Func = save }):AddButton({
             Text = "Load",
             Func = function()
                 local n = CM.CurrentConfigurationProfile
                 if n == "" then return end
-                lp(n)
-                Library:Notify("Loaded profile: " .. n, 3)
+                if lp(n) then Library:Notify("Loaded profile: " .. n, 3)
+                else Library:Notify("Failed to load: " .. n, 3) end
             end,
         })
         self:AddButton({ Text = "Delete", Func = function()
             local n = CM.CurrentConfigurationProfile
             if n == "" then return end
-            local p = CF .. "/" .. n .. Ext
-            if isfile(p) then
-                delfile(p)
-                Library:Notify("Deleted: " .. n, 3)
-                if isfile(AF) and readfile(AF) == n then delfile(AF) end
-                CM.CurrentConfigurationProfile = ""
-                Options.ConfigurationInput:SetValue("")
-                Options.ConfigurationDropdown:SetValues(gc())
-                Options.ConfigurationDropdown:SetValue(nil)
-            end
+            pcall(function()
+                local p = CF .. "/" .. n .. Ext
+                if isfile(p) then
+                    delfile(p)
+                    if isfile(AF) and readfile(AF) == n then delfile(AF) end
+                end
+            end)
+            CM.CurrentConfigurationProfile = ""
+            Options.ConfigurationInput:SetValue("")
+            Options.ConfigurationDropdown:SetValues(gc())
+            Options.ConfigurationDropdown:SetValue(nil)
         end }):AddButton({ Text = "Refresh", Func = function() Options.ConfigurationDropdown:SetValues(gc()) end })
         CM.Buttons.SetAutoload = self:AddButton({ Text = "Set Autoload", Func = function()
             local n = CM.CurrentConfigurationProfile
             if n == "" then return end
-            writefile(AF, n)
+            pcall(function() writefile(AF, n) end)
             Library:Notify("Autoload set: " .. n, 3)
             CM.Buttons.SetAutoload.Outer.Visible = false
             CM.Buttons.RemoveAutoload.Outer.Visible = true
         end })
         CM.Buttons.RemoveAutoload = self:AddButton({ Text = "Remove Autoload", Func = function()
-            if isfile(AF) then delfile(AF); Library:Notify("Autoload removed.", 3) end
+            pcall(function() if isfile(AF) then delfile(AF) end end)
+            Library:Notify("Autoload removed.", 3)
             CM.Buttons.SetAutoload.Outer.Visible = true
             CM.Buttons.RemoveAutoload.Outer.Visible = false
         end })
         CM.Buttons.RemoveAutoload.Outer.Visible = false
         return function()
-            if isfile(AF) then
-                local n = readfile(AF)
-                if n and n ~= "" then
-                    lp(n)
-                    Library:Notify("Profile '" .. n .. "' loaded.", 3)
-                    Options.ConfigurationDropdown:SetValue(n)
+            pcall(function()
+                if isfile(AF) then
+                    local n = readfile(AF)
+                    if n and n ~= "" then
+                        lp(n)
+                        Library:Notify("Profile '" .. n .. "' loaded.", 3)
+                        Options.ConfigurationDropdown:SetValue(n)
+                    end
                 end
-            end
+            end)
         end
     end
 
@@ -1768,7 +1918,112 @@ function Library:Notify(text, time)
 end
 
 -- ============================================================================
--- WINDOW — with proper open/close animation
+-- ICON SYSTEM (all drawn with Frames)
+-- ============================================================================
+local function DrawIcon(name, size, parent, color)
+    local holder = Library:Create("Frame", {
+        BackgroundTransparency = 1, Size = UDim2.fromOffset(size, size),
+        Parent = parent,
+    })
+    local parts = {}
+    local function add(i) table.insert(parts, i); return i end
+    local function line(x, y, ww, hh, rot)
+        return add(Library:Create("Frame", {
+            BackgroundColor3 = color, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(x, y),
+            Size = UDim2.fromOffset(ww, hh), Rotation = rot or 0,
+            Parent = holder,
+        }))
+    end
+    local function stroke(x, y, ww, hh)
+        local f = Library:Create("Frame", {
+            BackgroundTransparency = 1,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(x, y),
+            Size = UDim2.fromOffset(ww, hh), Parent = holder,
+        })
+        Library:Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = f })
+        local s = Library:Create("UIStroke", { Color = color, Thickness = 1.5, Parent = f })
+        add(f); add(s)
+        return f, s
+    end
+    local cx, cy = size / 2, size / 2
+    if name == "Aiming" then
+        line(cx, 3, 1.5, size * 0.22)
+        line(cx, size - 3, 1.5, size * 0.22)
+        line(3, cy, size * 0.22, 1.5)
+        line(size - 3, cy, size * 0.22, 1.5)
+        local dot = Library:Create("Frame", {
+            BackgroundColor3 = color, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(3, 3), Parent = holder,
+        })
+        add(dot)
+    elseif name == "Visuals" then
+        stroke(cx, cy, size * 0.9, size * 0.5)
+        local pupil = Library:Create("Frame", {
+            BackgroundColor3 = color, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(4, 4), Parent = holder,
+        })
+        Library:Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = pupil })
+        add(pupil)
+    elseif name == "World" then
+        stroke(cx, cy, size * 0.55, size * 0.55)
+        for i = 0, 7 do
+            local ang = math.rad(i * 45)
+            local r1, r2 = size * 0.38, size * 0.47
+            local x1, y1 = cx + math.cos(ang) * r1, cy + math.sin(ang) * r1
+            local x2, y2 = cx + math.cos(ang) * r2, cy + math.sin(ang) * r2
+            add(Library:Create("Frame", {
+                BackgroundColor3 = color, BorderSizePixel = 0,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromOffset((x1 + x2) / 2, (y1 + y2) / 2),
+                Size = UDim2.fromOffset(1.5, 2.5),
+                Rotation = math.deg(ang) - 90,
+                Parent = holder,
+            }))
+        end
+    elseif name == "Miscellaneous" then
+        local q, gap = size * 0.28, size * 0.08
+        local ps = {
+            { cx - gap/2 - q, cy - gap/2 - q },
+            { cx + gap/2, cy - gap/2 - q },
+            { cx - gap/2 - q, cy + gap/2 },
+            { cx + gap/2, cy + gap/2 },
+        }
+        for _, p in next, ps do
+            add(Library:Create("Frame", {
+                BackgroundColor3 = color, BorderSizePixel = 0,
+                Position = UDim2.fromOffset(p[1], p[2]),
+                Size = UDim2.fromOffset(q, q),
+                Parent = holder,
+            }))
+        end
+    elseif name == "Settings" then
+        local rows = { { 3, 0.3 }, { 8, 0.7 }, { 13, 0.5 } }
+        for _, r in ipairs(rows) do
+            local yy = r[1] + 1
+            line(cx, yy, size * 0.7, 1.2)
+            local dotX = size * (0.15 + 0.7 * r[2])
+            local dot = Library:Create("Frame", {
+                BackgroundColor3 = color, BorderSizePixel = 0,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromOffset(dotX, yy),
+                Size = UDim2.fromOffset(3.5, 3.5), Parent = holder,
+            })
+            Library:Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = dot })
+            add(dot)
+        end
+    else
+        stroke(cx, cy, size * 0.5, size * 0.5)
+    end
+    return holder, parts
+end
+
+-- ============================================================================
+-- WINDOW
 -- ============================================================================
 function Library:CreateWindow(cfg)
     if type(cfg.Title) ~= "string" then cfg.Title = Library.Brand end
@@ -1779,23 +2034,10 @@ function Library:CreateWindow(cfg)
 
     local Window = { Tabs = {}, Size = cfg.Size }
 
-    -- CanvasGroup for whole-menu fade
-    local Canvas
-    local useCanvas = pcall(function()
-        Canvas = cref(Instance.new("CanvasGroup"))
-        Canvas.Parent = GUI
-    end)
-    if not useCanvas then
-        Canvas = Library:Create("Frame", {
-            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
-            ZIndex = 0, Parent = GUI,
-        })
-    end
-
     local Outer = Library:Create("Frame", {
         AnchorPoint = cfg.AnchorPoint, BackgroundColor3 = Library.Border,
         BorderSizePixel = 0, Position = cfg.Position, Size = cfg.Size,
-        Visible = false, ZIndex = 1, Parent = Canvas,
+        Visible = false, ZIndex = 1, Parent = GUI,
     })
     Library:MakeDraggable(Outer, 36)
 
@@ -1805,7 +2047,7 @@ function Library:CreateWindow(cfg)
         ZIndex = 2, Parent = Outer,
     })
 
-    -- ============ HEADER ============
+    -- HEADER
     local Header = Library:Create("Frame", {
         BackgroundColor3 = Library.HeaderBG, BorderSizePixel = 0,
         Size = UDim2.new(1, 0, 0, 36), ZIndex = 3, Parent = Inner,
@@ -1821,14 +2063,13 @@ function Library:CreateWindow(cfg)
         ZIndex = 5, Parent = Header,
     })
     local TitleLbl = Library:CreateLabel({
-        Position = UDim2.new(0, 32, 0, 0), Size = UDim2.new(1, -180, 1, 0),
+        Position = UDim2.new(0, 32, 0, 0), Size = UDim2.new(0, 200, 1, 0),
         Text = cfg.Title, Font = Library.FontBold, TextSize = 16,
         TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 5, Parent = Header,
     })
     Library:AddToRegistry(TitleLbl, { TextColor3 = "FontColor" })
     local SubtitleLbl = Library:CreateLabel({
-        Position = UDim2.new(0, 32 + TitleLbl.TextBounds.X + 10, 0, 0),
-        Size = UDim2.new(1, -200, 1, 0),
+        Position = UDim2.new(0, 200, 0, 0), Size = UDim2.new(1, -280, 1, 0),
         Text = "", Font = Library.Font, TextSize = 12,
         TextColor3 = Library.FontMuted, TextXAlignment = Enum.TextXAlignment.Left,
         ZIndex = 5, Parent = Header,
@@ -1840,7 +2081,6 @@ function Library:CreateWindow(cfg)
         TextColor3 = Library.FontDim, TextXAlignment = Enum.TextXAlignment.Right,
         ZIndex = 5, Parent = Header,
     })
-
     -- Close button
     local closeBtn = Library:Create("Frame", {
         AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
@@ -1849,7 +2089,6 @@ function Library:CreateWindow(cfg)
         BorderMode = Enum.BorderMode.Inset, ZIndex = 6, Parent = Header, Active = true,
     })
     Library:AddToRegistry(closeBtn, { BackgroundColor3 = "ControlBG", BorderColor3 = "Outline" })
-    -- X drawn from 2 rotated strokes
     for _, rot in ipairs({ 45, -45 }) do
         Library:Create("Frame", {
             BackgroundColor3 = Library.FontMuted, BorderSizePixel = 0,
@@ -1870,13 +2109,12 @@ function Library:CreateWindow(cfg)
         end
     end)
 
-    -- ============ BODY ============
+    -- BODY
     local Body = Library:Create("Frame", {
         BackgroundColor3 = Library.WindowBG, BorderSizePixel = 0,
         Position = UDim2.new(0, 0, 0, 36), Size = UDim2.new(1, 0, 1, -36),
         ZIndex = 3, Parent = Inner,
     })
-
     local Sidebar = Library:Create("Frame", {
         BackgroundColor3 = Library.SidebarBG, BorderSizePixel = 0,
         Size = UDim2.new(0, 52, 1, 0), ZIndex = 4, Parent = Body,
@@ -1893,7 +2131,6 @@ function Library:CreateWindow(cfg)
         Position = UDim2.new(0, 52, 0, 0), Size = UDim2.new(1, -52, 1, 0),
         ZIndex = 4, Parent = Body,
     })
-
     local SubHeader = Library:Create("Frame", {
         BackgroundColor3 = Library.HeaderBG, BorderSizePixel = 0,
         Size = UDim2.new(1, 0, 0, 24), ZIndex = 5, Parent = Content,
@@ -1913,7 +2150,6 @@ function Library:CreateWindow(cfg)
         Text = "", Font = Library.FontMed, TextSize = 12,
         TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 6, Parent = SubHeader,
     })
-
     local TabContainer = Library:Create("Frame", {
         BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 24),
         Size = UDim2.new(1, 0, 1, -24), ZIndex = 5, Parent = Content,
@@ -1922,12 +2158,10 @@ function Library:CreateWindow(cfg)
     function Window:SetWindowTitle(t) TitleLbl.Text = t end
     function Window:SetSubtitle(t)
         SubtitleLbl.Text = (t and t ~= "") and t or ""
-        SubtitleLbl.Position = UDim2.new(0, 32 + TitleLbl.TextBounds.X + 12, 0, 0)
     end
 
     function Window:AddTab(name, icon)
         local Tab = { Groupboxes = {}, Tabboxes = {}, IconParts = {}, IconName = name }
-
         local IB = Library:Create("Frame", {
             BackgroundColor3 = Library.SidebarBG, BorderSizePixel = 0,
             Size = UDim2.new(0, 40, 0, 40), ZIndex = 5, Parent = Sidebar,
@@ -1936,14 +2170,12 @@ function Library:CreateWindow(cfg)
         iconFrame.Position = UDim2.new(0, 9, 0, 9)
         Tab.IconParts = parts
         Tab.IconButton = IB
-
         local IAcc = Library:Create("Frame", {
             BackgroundColor3 = Library.Accent, BorderSizePixel = 0,
             Position = UDim2.new(0, 0, 0.5, -8), Size = UDim2.new(0, 2, 0, 16),
             Visible = false, ZIndex = 7, Parent = IB,
         })
         Library:AddToRegistry(IAcc, { BackgroundColor3 = "Accent" })
-
         local TabFrame = Library:Create("Frame", {
             Name = "TabFrame", BackgroundTransparency = 1,
             Size = UDim2.new(1, 0, 1, 0), Visible = false,
@@ -1976,7 +2208,6 @@ function Library:CreateWindow(cfg)
                 S.CanvasSize = UDim2.fromOffset(0, S.UIListLayout.AbsoluteContentSize.Y)
             end)
         end
-
         function Tab:ShowTab()
             for _, T in next, Window.Tabs do T:HideTab() end
             IAcc.Visible = true
@@ -2123,7 +2354,7 @@ function Library:CreateWindow(cfg)
                     for _, e in next, T.Container:GetChildren() do
                         if not e:IsA("UIListLayout") and e.Visible then s = s + e.Size.Y.Offset end
                     end
-                    BO.Size = UDim2.new(1, 0, 0, 32 + s + 12)
+                    BO.Size = UDim2.new(0, BO.AbsoluteSize.X, 0, 32 + s + 12)
                 end
                 B.InputBegan:Connect(function(input)
                     if input.UserInputType == Enum.UserInputType.MouseButton1 and not Library:MouseIsOverOpenedFrame() then
@@ -2158,45 +2389,36 @@ function Library:CreateWindow(cfg)
         return Tab
     end
 
-    -- ============ OPEN/CLOSE ANIMATION ============
+    -- ============ OPEN / CLOSE ============
     local menuOpen = false
-    local animating = false
+    local toggleToken = 0
 
     function Library:Toggle(force)
-        if animating then return end
         local target = (force ~= nil) and force or (not menuOpen)
         if target == menuOpen then return end
-        animating = true
+        menuOpen = target
+        Library.Toggled = target
+        toggleToken = toggleToken + 1
+        local myToken = toggleToken
 
         if target then
-            -- OPEN
-            menuOpen = true
-            Library.Toggled = true
             Outer.Visible = true
-            Outer.Size = UDim2.fromOffset(math.floor(cfg.Size.X.Offset * 0.94), math.floor(cfg.Size.Y.Offset * 0.94))
-            if Canvas:IsA("CanvasGroup") then
-                Canvas.GroupTransparency = 1
-                Tween:Create(Canvas, TweenInfo.new(Library.AnimOpen, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-                    GroupTransparency = 0,
-                }):Play()
-            else
-                for _, d in next, Outer:GetDescendants() do
-                    if d:IsA("Frame") or d:IsA("ScrollingFrame") then
-                        d.BackgroundTransparency = 1 - (1 - d.BackgroundTransparency) * 0
-                    end
-                end
-            end
-            Tween:Create(Outer, TweenInfo.new(Library.AnimOpen, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-                Size = cfg.Size,
-            }):Play()
-            -- Cursor
+            Outer.Size = UDim2.fromOffset(
+                math.floor(cfg.Size.X.Offset * 0.92),
+                math.floor(cfg.Size.Y.Offset * 0.92)
+            )
+            Tween:Create(Outer,
+                TweenInfo.new(Library.AnimOpen, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+                { Size = cfg.Size }
+            ):Play()
             task.spawn(function()
                 local st = UIS.MouseIconEnabled
                 local c = Drawing.new("Triangle")
-                c.Thickness = 1; c.Filled = true; c.Visible = true; c.Color = Library.Accent
+                c.Thickness = 1; c.Filled = true; c.Visible = true
                 while menuOpen and GUI.Parent do
                     UIS.MouseIconEnabled = false
                     local mp = UIS:GetMouseLocation()
+                    c.Color = Library.Accent
                     c.PointA = Vector2.new(mp.X, mp.Y)
                     c.PointB = Vector2.new(mp.X + 14, mp.Y + 5)
                     c.PointC = Vector2.new(mp.X + 5, mp.Y + 14)
@@ -2206,26 +2428,21 @@ function Library:CreateWindow(cfg)
                 c:Remove()
             end)
         else
-            -- CLOSE
-            menuOpen = false
-            Library.Toggled = false
             for m in next, Library.ModeSelectOuters do m.Visible = false end
-            if Canvas:IsA("CanvasGroup") then
-                local t = Tween:Create(Canvas, TweenInfo.new(Library.AnimClose, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
-                    GroupTransparency = 1,
-                })
-                t:Play()
-                t.Completed:Wait()
-            end
-            Tween:Create(Outer, TweenInfo.new(Library.AnimClose, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
-                Size = UDim2.fromOffset(math.floor(cfg.Size.X.Offset * 0.94), math.floor(cfg.Size.Y.Offset * 0.94)),
-            }):Play()
-            task.wait(Library.AnimClose)
-            Outer.Visible = false
+            Tween:Create(Outer,
+                TweenInfo.new(Library.AnimClose, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+                {
+                    Size = UDim2.fromOffset(
+                        math.floor(cfg.Size.X.Offset * 0.92),
+                        math.floor(cfg.Size.Y.Offset * 0.92)
+                    )
+                }
+            ):Play()
             UIS.MouseIconEnabled = true
+            task.delay(Library.AnimClose, function()
+                if toggleToken == myToken then Outer.Visible = false end
+            end)
         end
-
-        animating = false
     end
 
     UIS.InputBegan:Connect(function(input, processed)
@@ -2233,18 +2450,19 @@ function Library:CreateWindow(cfg)
             if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode.Name == Library.ToggleKeybind.Value then
                 Library:Toggle()
             end
-        elseif input.KeyCode == Enum.KeyCode.RightControl or (input.KeyCode == Enum.KeyCode.RightShift and not processed) then
+        elseif input.KeyCode == Enum.KeyCode.RightControl
+            or input.KeyCode == Enum.KeyCode.RightShift
+            or input.KeyCode == Enum.KeyCode.Insert then
             Library:Toggle()
         end
     end)
 
     Window.Holder = Outer
-    Window.Canvas = Canvas
     return Window
 end
 
 -- ============================================================================
--- CUSTOMIZATION TAB BUILDER
+-- CUSTOMIZATION TAB
 -- ============================================================================
 function Library:BuildCustomizationTab(tab)
     local ui = tab:AddLeftGroupbox("Interface")
@@ -2275,7 +2493,6 @@ function Library:BuildCustomizationTab(tab)
             end
         end,
     })
-
     local beh = tab:AddRightGroupbox("Behavior")
     beh:AddToggle("UI_Animations", {
         Text = "UI Animations", Default = true,
@@ -2286,11 +2503,11 @@ function Library:BuildCustomizationTab(tab)
         Callback = function(v) Library.Sounds.Enabled = v end,
     })
     beh:AddSlider("UI_AnimOpen", {
-        Text = "Open Speed", Default = 28, Min = 8, Max = 60, Rounding = 0, Suffix = "ms",
+        Text = "Open Speed", Default = 30, Min = 10, Max = 60, Rounding = 0, Suffix = "ms",
         Callback = function(v) Library.AnimOpen = v / 100 end,
     })
     beh:AddSlider("UI_AnimClose", {
-        Text = "Close Speed", Default = 18, Min = 8, Max = 60, Rounding = 0, Suffix = "ms",
+        Text = "Close Speed", Default = 20, Min = 10, Max = 60, Rounding = 0, Suffix = "ms",
         Callback = function(v) Library.AnimClose = v / 100 end,
     })
 end
@@ -2306,4 +2523,7 @@ Players.PlayerRemoving:Connect(OnPlayerChange)
 
 getgenv().Library = Library
 getgenv().gamesense = Library
+getgenv().openMenu = function() Library:Toggle(true) end
+getgenv().closeMenu = function() Library:Toggle(false) end
+getgenv().toggleMenu = function() Library:Toggle() end
 return Library
