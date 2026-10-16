@@ -2389,19 +2389,23 @@ function Library:CreateWindow(cfg)
         return Tab
     end
 
-    -- ============ OPEN / CLOSE ============
+       -- ============ OPEN / CLOSE ============
     local menuOpen = false
-    local toggleToken = 0
+    local animGeneration = 0
+    local cursorActive = false
+    local lastKeyToggle = 0
+    local KEY_TOGGLE_DEBOUNCE = 0.25
 
     function Library:Toggle(force)
         local target = (force ~= nil) and force or (not menuOpen)
         if target == menuOpen then return end
         menuOpen = target
         Library.Toggled = target
-        toggleToken = toggleToken + 1
-        local myToken = toggleToken
+        animGeneration = animGeneration + 1
+        local gen = animGeneration
 
         if target then
+            -- OPEN
             Outer.Visible = true
             Outer.Size = UDim2.fromOffset(
                 math.floor(cfg.Size.X.Offset * 0.92),
@@ -2411,23 +2415,29 @@ function Library:CreateWindow(cfg)
                 TweenInfo.new(Library.AnimOpen, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
                 { Size = cfg.Size }
             ):Play()
-            task.spawn(function()
-                local st = UIS.MouseIconEnabled
-                local c = Drawing.new("Triangle")
-                c.Thickness = 1; c.Filled = true; c.Visible = true
-                while menuOpen and GUI.Parent do
-                    UIS.MouseIconEnabled = false
-                    local mp = UIS:GetMouseLocation()
-                    c.Color = Library.Accent
-                    c.PointA = Vector2.new(mp.X, mp.Y)
-                    c.PointB = Vector2.new(mp.X + 14, mp.Y + 5)
-                    c.PointC = Vector2.new(mp.X + 5, mp.Y + 14)
-                    Render:Wait()
-                end
-                UIS.MouseIconEnabled = st
-                c:Remove()
-            end)
+
+            if not cursorActive then
+                cursorActive = true
+                task.spawn(function()
+                    local st = UIS.MouseIconEnabled
+                    local c = Drawing.new("Triangle")
+                    c.Thickness = 1; c.Filled = true; c.Visible = true
+                    while menuOpen and GUI.Parent do
+                        UIS.MouseIconEnabled = false
+                        local mp = UIS:GetMouseLocation()
+                        c.Color = Library.Accent
+                        c.PointA = Vector2.new(mp.X, mp.Y)
+                        c.PointB = Vector2.new(mp.X + 14, mp.Y + 5)
+                        c.PointC = Vector2.new(mp.X + 5, mp.Y + 14)
+                        Render:Wait()
+                    end
+                    UIS.MouseIconEnabled = st
+                    c:Remove()
+                    cursorActive = false
+                end)
+            end
         else
+            -- CLOSE
             for m in next, Library.ModeSelectOuters do m.Visible = false end
             Tween:Create(Outer,
                 TweenInfo.new(Library.AnimClose, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
@@ -2439,28 +2449,38 @@ function Library:CreateWindow(cfg)
                 }
             ):Play()
             UIS.MouseIconEnabled = true
-            task.delay(Library.AnimClose, function()
-                if toggleToken == myToken then Outer.Visible = false end
+            task.delay(Library.AnimClose + 0.02, function()
+                if animGeneration == gen and not menuOpen then
+                    Outer.Visible = false
+                end
             end)
         end
     end
 
-    UIS.InputBegan:Connect(function(input, processed)
-        if type(Library.ToggleKeybind) == "table" and Library.ToggleKeybind.Type == "KeyPicker" then
-            if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode.Name == Library.ToggleKeybind.Value then
-                Library:Toggle()
-            end
-        elseif input.KeyCode == Enum.KeyCode.RightControl
-            or input.KeyCode == Enum.KeyCode.RightShift
-            or input.KeyCode == Enum.KeyCode.Insert then
-            Library:Toggle()
-        end
+    local function isToggleKey(kc)
+        if kc == Enum.KeyCode.RightShift
+            or kc == Enum.KeyCode.RightControl
+            or kc == Enum.KeyCode.Insert then return true end
+        if type(Library.ToggleKeybind) == "table"
+           and Library.ToggleKeybind.Type == "KeyPicker"
+           and kc.Name == Library.ToggleKeybind.Value then return true end
+        return false
+    end
+
+    UIS.InputBegan:Connect(function(input)
+        -- Critical: filter to real keyboard events only.
+        -- Without this, one physical press fires Keyboard + Gamepad1..8 + executor
+        -- duplicates, so Toggle() runs 3-8× per press and the menu flickers.
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        if not isToggleKey(input.KeyCode) then return end
+
+        local now = os.clock()
+        if now - lastKeyToggle < KEY_TOGGLE_DEBOUNCE then return end
+        lastKeyToggle = now
+        Library:Toggle()
     end)
 
     Window.Holder = Outer
-    return Window
-end
-
 -- ============================================================================
 -- CUSTOMIZATION TAB
 -- ============================================================================
