@@ -5,7 +5,7 @@
 ]]
 
 -- ============================================================
--- Services & compat
+-- Services & executor compat
 -- ============================================================
 local clonerefFunction = cloneref or clone_ref or clonereference or clone_reference
 local ns__cloneref = clonerefFunction and function(Object)
@@ -29,13 +29,14 @@ local ScreenGui = ns__cloneref(Instance.new("ScreenGui"))
 ScreenGui.Name = "gamesense_" .. tostring(math.random(1000, 9999))
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 ScreenGui.IgnoreGuiInset = true
+ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = ns__cloneref(game:GetService("CoreGui"))
 
 local Toggles = {}
 local Options = {}
 
 -- ============================================================
--- gamesense palette + typography
+-- Palette + typography (gamesense)
 -- ============================================================
 local Library = {
     Toggled = true,
@@ -48,29 +49,29 @@ local Library = {
 
     -- core colors
     FontColor     = Color3.fromRGB(220, 220, 220),
-    FontMuted     = Color3.fromRGB(150, 150, 150),
-    WindowBG      = Color3.fromRGB(12, 12, 12),   -- outer frame
-    PanelBG       = Color3.fromRGB(24, 24, 24),   -- groupbox body
-    SectionBG     = Color3.fromRGB(18, 18, 18),   -- inner section / header strip
-    SidebarBG     = Color3.fromRGB(8, 8, 8),      -- left icon strip
-    HeaderBG      = Color3.fromRGB(32, 32, 32),   -- header bar
-    ControlBG     = Color3.fromRGB(32, 32, 32),
-    ControlHover  = Color3.fromRGB(42, 42, 42),
+    FontMuted     = Color3.fromRGB(140, 140, 140),
+    WindowBG      = Color3.fromRGB(14, 14, 14),
+    PanelBG       = Color3.fromRGB(22, 22, 22),
+    SectionBG     = Color3.fromRGB(30, 30, 30),
+    SidebarBG     = Color3.fromRGB(10, 10, 10),
+    HeaderBG      = Color3.fromRGB(20, 20, 20),
+    ControlBG     = Color3.fromRGB(28, 28, 28),
+    ControlHover  = Color3.fromRGB(38, 38, 38),
     Border        = Color3.fromRGB(6, 6, 6),
-    Outline       = Color3.fromRGB(52, 52, 52),
-    Divider       = Color3.fromRGB(40, 40, 40),
+    Outline       = Color3.fromRGB(46, 46, 46),
+    Divider       = Color3.fromRGB(38, 38, 38),
 
     -- accent / status
-    Accent        = Color3.fromRGB(144, 200, 83),   -- gamesense green
+    Accent        = Color3.fromRGB(144, 200, 83),
     AccentDark    = Color3.fromRGB(96, 145, 55),
     AccentHover   = Color3.fromRGB(160, 215, 100),
     RiskColor     = Color3.fromRGB(217, 83, 79),
     WarningColor  = Color3.fromRGB(240, 173, 78),
     Black         = Color3.new(0, 0, 0),
 
-    -- legacy aliases (used throughout old code)
-    MainColor       = Color3.fromRGB(24, 24, 24),
-    BackgroundColor = Color3.fromRGB(18, 18, 18),
+    -- legacy aliases
+    MainColor       = Color3.fromRGB(22, 22, 22),
+    BackgroundColor = Color3.fromRGB(30, 30, 30),
 
     -- typography
     Font        = Enum.Font.SourceSans,
@@ -85,13 +86,14 @@ local Library = {
     ModeSelectOuters= {},
     ScreenGui       = ScreenGui,
 
-    -- behavior toggles
     Sounds = {
         Enabled = true,
         Click   = "rbxassetid://6895079853",
         Volume  = 0.35,
     },
-    CornerRadius = 0, -- gamesense is squared-off
+
+    CornerRadius = 0,
+    NotifyOnError = false,
 }
 
 Library.AccentColor     = Library.Accent
@@ -120,8 +122,8 @@ function Library:SafeCallback(f, ...)
     if not Library.NotifyOnError then return f(...) end
     local ok, err = pcall(f, ...)
     if not ok then
-        local _, i = err:find(":%d+: ")
-        return Library:Notify(i and err:sub(i + 1) or err, 3)
+        local _, i = string.find(tostring(err), ":%d+: ")
+        Library:Notify(i and string.sub(err, i + 1) or tostring(err), 3)
     end
 end
 
@@ -254,12 +256,49 @@ function Library:PlaySound(id, pitch)
     task.delay(2, function() pcall(function() s:Destroy() end) end)
 end
 
+function Library:AddToolTip(InfoStr, HoverInstance)
+    local X, Y = Library:GetTextBounds(InfoStr, Library.Font, 12)
+    local Tooltip = Library:Create("Frame", {
+        BackgroundColor3 = Library.SectionBG,
+        BorderColor3 = Library.Border,
+        Size = UDim2.fromOffset(X + 8, Y + 6),
+        ZIndex = 100,
+        Parent = Library.ScreenGui,
+        Visible = false,
+    })
+    Library:AddToRegistry(Tooltip, { BackgroundColor3 = "SectionBG", BorderColor3 = "Border" })
+    local Label = Library:CreateLabel({
+        Position = UDim2.fromOffset(4, 2),
+        Size = UDim2.fromOffset(X, Y),
+        TextSize = 12,
+        Text = InfoStr,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = Tooltip.ZIndex + 1,
+        Parent = Tooltip,
+    })
+    local IsHovering = false
+    HoverInstance.MouseEnter:Connect(function()
+        if Library:MouseIsOverOpenedFrame() then return end
+        IsHovering = true
+        Tooltip.Position = UDim2.fromOffset(Mouse.X + 15, Mouse.Y + 12)
+        Tooltip.Visible = true
+        while IsHovering do
+            RunService.Heartbeat:Wait()
+            Tooltip.Position = UDim2.fromOffset(Mouse.X + 15, Mouse.Y + 12)
+        end
+    end)
+    HoverInstance.MouseLeave:Connect(function()
+        IsHovering = false
+        Tooltip.Visible = false
+    end)
+end
+
 ScreenGui.DescendantRemoving:Connect(function(inst)
     if Library.RegistryMap[inst] then Library:RemoveFromRegistry(inst) end
 end)
 
 -- ============================================================
--- Base addons (AddColorPicker / AddKeyPicker)
+-- Base addons
 -- ============================================================
 local BaseAddons = {}
 do
@@ -293,7 +332,7 @@ do
 
         local PickerFrameOuter = Library:Create("Frame", {
             Name = "Color",
-            BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+            BackgroundColor3 = Library.Border,
             BorderColor3 = Library.Border,
             Position = UDim2.fromOffset(DisplayFrame.AbsolutePosition.X, DisplayFrame.AbsolutePosition.Y + 18),
             Size = UDim2.fromOffset(230, Info.Transparency and 271 or 253),
@@ -313,13 +352,12 @@ do
         })
         Library:AddToRegistry(PickerFrameInner, { BackgroundColor3 = "SectionBG", BorderColor3 = "Outline" })
 
-        local Highlight = Library:Create("Frame", {
+        Library:Create("Frame", {
             BackgroundColor3 = Library.Accent,
             BorderSizePixel = 0,
             Size = UDim2.new(1, 0, 0, 2),
             ZIndex = 17, Parent = PickerFrameInner,
         })
-        Library:AddToRegistry(Highlight, { BackgroundColor3 = "Accent" })
 
         local SatVibMapOuter = Library:Create("Frame", {
             BorderColor3 = Library.Border,
@@ -349,8 +387,8 @@ do
             ImageColor3 = Color3.new(0, 0, 0),
             ZIndex = 19, Parent = SatVibMap,
         })
-        local CursorInner = Library:Create("ImageLabel", {
-            Size = UDim2.new(0, CursorOuter.Size.X.Offset - 2, 0, CursorOuter.Size.Y.Offset - 2),
+        Library:Create("ImageLabel", {
+            Size = UDim2.new(0, 4, 0, 4),
             Position = UDim2.new(0, 1, 0, 1),
             BackgroundTransparency = 1,
             Image = "http://www.roblox.com/asset/?id=9619665977",
@@ -375,13 +413,12 @@ do
             Size = UDim2.new(1, 0, 0, 1),
             ZIndex = 18, Parent = HueSelectorInner,
         })
-
-        local SequenceTable = {}
+        local SeqTable = {}
         for H = 0, 1, 0.1 do
-            table.insert(SequenceTable, ColorSequenceKeypoint.new(H, Color3.fromHSV(H, 1, 1)))
+            table.insert(SeqTable, ColorSequenceKeypoint.new(H, Color3.fromHSV(H, 1, 1)))
         end
         Library:Create("UIGradient", {
-            Color = ColorSequence.new(SequenceTable),
+            Color = ColorSequence.new(SeqTable),
             Rotation = 90, Parent = HueSelectorInner,
         })
 
@@ -578,7 +615,7 @@ do
         local PickOuter = Library:Create("Frame", {
             BackgroundColor3 = Library.Border,
             BorderColor3 = Library.Border,
-            Size = UDim2.new(0, 30, 0, 14),
+            Size = UDim2.new(0, 28, 0, 14),
             ZIndex = 6, Parent = ToggleLabel,
         })
         local PickInner = Library:Create("Frame", {
@@ -853,6 +890,9 @@ do
         if not DoesWrap then setmetatable(Label, BaseAddons) end
         Groupbox:AddBlank(5)
         Groupbox:Resize()
+        if type(ToolTip) == "string" then
+            Library:AddToolTip(ToolTip, TextLabel)
+        end
         return Label
     end
 
@@ -916,7 +956,10 @@ do
         Button.Outer.Parent = Container
         InitEvents(Button)
 
-        function Button:AddTooltip(tip) if type(tip) == "string" then Library:AddToolTip(tip, self.Outer) end; return self end
+        function Button:AddTooltip(tip)
+            if type(tip) == "string" then Library:AddToolTip(tip, self.Outer) end
+            return self
+        end
         function Button:AddButton(...)
             local SubButton = {}
             ProcessButtonParams("SubButton", SubButton, ...)
@@ -1011,9 +1054,13 @@ do
         end
 
         if Textbox.Finished then
-            Box.FocusLost:Connect(function(Enter) if Enter then Textbox:SetValue(Box.Text); Library:AttemptSave() end end)
+            Box.FocusLost:Connect(function(Enter)
+                if Enter then Textbox:SetValue(Box.Text); Library:AttemptSave() end
+            end)
         else
-            Box:GetPropertyChangedSignal("Text"):Connect(function() Textbox:SetValue(Box.Text); Library:AttemptSave() end)
+            Box:GetPropertyChangedSignal("Text"):Connect(function()
+                Textbox:SetValue(Box.Text); Library:AttemptSave()
+            end)
         end
 
         function Textbox:OnChanged(Func) Textbox.Changed = Func; Func(Textbox.Value) end
@@ -1024,7 +1071,7 @@ do
     end
 
     -- ========================================================
-    -- Toggle  — gamesense-style small square checkbox
+    -- Toggle  — gamesense-style 13x13 checkbox with tick
     -- ========================================================
     function Funcs:AddToggle(Index, Info)
         assert(Info.Text, "AddToggle: Missing `Text` string.")
@@ -1048,7 +1095,7 @@ do
             BackgroundColor3 = Library.Border,
             BorderColor3 = Library.Border,
             Position = UDim2.new(0, 0, 0, 1),
-            Size = UDim2.new(0, 13, 0, 13),
+            Size = UDim2.new(0, 14, 0, 14),
             ZIndex = 6, Parent = Row,
         })
         Library:AddToRegistry(ToggleOuter, { BorderColor3 = "Border" })
@@ -1062,22 +1109,20 @@ do
         })
         Library:AddToRegistry(ToggleInner, { BackgroundColor3 = "ControlBG", BorderColor3 = "Outline" })
 
-        -- tick drawn as a small image so it looks like gamesense's checkmark
         local Check = Library:Create("ImageLabel", {
             BackgroundTransparency = 1,
             Size = UDim2.new(1, 0, 1, 0),
-            Image = "rbxassetid://3926305904",
-            ImageRectOffset = Vector2.new(4, 4),
+            Image = "rbxassetid://3926307971",
+            ImageRectOffset = Vector2.new(324, 84),
             ImageRectSize = Vector2.new(36, 36),
-            ImageColor3 = Library.FontColor,
+            ImageColor3 = Color3.fromRGB(20, 20, 20),
             Visible = false,
             ZIndex = 8, Parent = ToggleInner,
         })
-        Library:AddToRegistry(Check, { ImageColor3 = "FontColor" })
 
         local ToggleLabel = Library:CreateLabel({
             Size = UDim2.new(1, -22, 1, 0),
-            Position = UDim2.new(0, 20, 0, 0),
+            Position = UDim2.new(0, 22, 0, 0),
             TextSize = Library.FontSize,
             Text = Info.Text,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -1099,7 +1144,11 @@ do
         })
 
         Row.MouseEnter:Connect(function()
-            ToggleInner.BackgroundColor3 = Toggle.Value and Library.AccentHover or Library.ControlHover
+            if Toggle.Value then
+                ToggleInner.BackgroundColor3 = Library.AccentHover
+            else
+                ToggleInner.BackgroundColor3 = Library.ControlHover
+            end
         end)
         Row.MouseLeave:Connect(function()
             ToggleInner.BackgroundColor3 = Toggle.Value and Library.Accent or Library.ControlBG
@@ -1110,11 +1159,10 @@ do
         function Toggle:Display()
             local on = Toggle.Value
             ToggleInner.BackgroundColor3 = on and Library.Accent or Library.ControlBG
-            ToggleInner.BorderColor3   = on and Library.AccentDark or Library.Outline
+            ToggleInner.BorderColor3 = on and Library.AccentDark or Library.Outline
             Library.RegistryMap[ToggleInner].Properties.BackgroundColor3 = on and "Accent" or "ControlBG"
-            Library.RegistryMap[ToggleInner].Properties.BorderColor3     = on and "AccentDark" or "Outline"
+            Library.RegistryMap[ToggleInner].Properties.BorderColor3 = on and "AccentDark" or "Outline"
             Check.Visible = on
-            if on then Check.ImageColor3 = Color3.fromRGB(20, 20, 20) else Check.ImageColor3 = Library.FontColor end
         end
 
         function Toggle:OnChanged(Func) Toggle.Changed = Func; Func(Toggle.Value) end
@@ -1161,7 +1209,7 @@ do
     end
 
     -- ========================================================
-    -- Slider  — gamesense-style thick bar with value overlay
+    -- Slider  — gamesense-style thick bar with value inside
     -- ========================================================
     function Funcs:AddSlider(Index, Info)
         assert(Info.Default, "AddSlider: Missing default value.")
@@ -1197,7 +1245,7 @@ do
         local SliderOuter = Library:Create("Frame", {
             BackgroundColor3 = Library.Border,
             BorderColor3 = Library.Border,
-            Size = UDim2.new(1, -4, 0, 14),
+            Size = UDim2.new(1, -4, 0, 15),
             ZIndex = 5, Parent = Container,
         })
         Library:AddToRegistry(SliderOuter, { BorderColor3 = "Border" })
@@ -1220,16 +1268,16 @@ do
         Library:AddToRegistry(Fill, { BackgroundColor3 = "Accent" })
 
         local DisplayLabel = Library:CreateLabel({
-            Size = UDim2.new(1, 0, 1, 0),
+            Size = UDim2.new(1, -6, 1, 0),
+            Position = UDim2.new(0, 3, 0, 0),
             TextSize = 12,
             Text = "0",
             TextColor3 = Color3.fromRGB(20, 20, 20),
+            TextXAlignment = Enum.TextXAlignment.Left,
             ZIndex = 9, Parent = SliderInner,
         })
 
-        function Slider:UpdateColors()
-            Fill.BackgroundColor3 = Library.Accent
-        end
+        function Slider:UpdateColors() Fill.BackgroundColor3 = Library.Accent end
 
         function Slider:Display()
             local Suffix = Info.Suffix or ""
@@ -1292,14 +1340,14 @@ do
     end
 
     -- ========================================================
-    -- Dropdown  — gamesense-style compact with chevron
+    -- Dropdown  — compact with chevron
     -- ========================================================
     function Funcs:AddDropdown(Index, Info)
         if Info.SpecialType == "Player" then Info.Values = GetPlayersString(); Info.AllowNull = true
         elseif Info.SpecialType == "Team" then Info.Values = GetTeamsString(); Info.AllowNull = true end
 
         assert(Info.Values, "AddDropdown: Missing dropdown value list.")
-        assert(Info.AllowNull or Info.Default, "AddDropdown: Missing default value. Pass `AllowNull` as true if intentional.")
+        assert(Info.AllowNull or Info.Default, "AddDropdown: Missing default value.")
         if not Info.Text then Info.Compact = true end
 
         local Dropdown = {
@@ -1368,9 +1416,7 @@ do
         local ListOuter = Library:Create("Frame", {
             BackgroundColor3 = Library.Border,
             BorderColor3 = Library.Border,
-            ZIndex = 20,
-            Visible = false,
-            Parent = ScreenGui,
+            ZIndex = 20, Visible = false, Parent = ScreenGui,
         })
 
         local function RecalcPos()
@@ -1398,8 +1444,7 @@ do
             CanvasSize = UDim2.new(0, 0, 0, 0),
             Size = UDim2.new(1, 0, 1, 0),
             ZIndex = 21, Parent = ListInner,
-            TopImage = "rbxasset://textures/ui/Scroll/scroll-middle.png",
-            BottomImage = "rbxasset://textures/ui/Scroll/scroll-middle.png",
+            TopImage = "", BottomImage = "",
             ScrollBarThickness = 3,
             ScrollBarImageColor3 = Library.Accent,
         })
@@ -1576,7 +1621,6 @@ do
     end
 
     function Funcs:AddPrioritySelector(Index, Info)
-        -- (unchanged from original, kept for compatibility)
         assert(type(Info) == "table")
         assert(type(Info.Default) == "table")
         local Groupbox = self
@@ -1603,7 +1647,7 @@ do
         if TitleH > 0 then
             Library:CreateLabel({
                 Size = UDim2.new(1, 0, 0, TitleH - 1),
-                TextSize = 13,
+                TextSize = 12,
                 Text = Info.Text,
                 TextXAlignment = Enum.TextXAlignment.Left,
                 ZIndex = 6, Parent = Wrapper,
@@ -1739,11 +1783,184 @@ do
         return Depbox
     end
 
-    -- ConfigManager: same shape as original, only cosmetic changes omitted
     function Funcs:CreateConfigurationManager(BasePath, Extension, TablesToSave)
-        -- (identical to your current implementation -- omitted here for brevity,
-        --  copy the version from your current library. It is UI-agnostic.)
-        -- If you'd like the full body re-pasted, ask and I'll include it.
+        local ConfigurationFolder = BasePath .. "/Configs"
+        local AutoloadFile = BasePath .. "/Autoload" .. Extension
+        local ConfigurationManager = { CurrentConfigurationProfile = "", Buttons = {} }
+
+        local function SerializeValue(Value)
+            if type(Value) == "table" then
+                local Data = {}
+                for k, v in next, Value do Data[k] = SerializeValue(v) end
+                return Data
+            end
+            return typeof(Value) == "Color3" and { Type = "Color3", Hex = Value:ToHex() } or Value
+        end
+
+        local function DeserializeRecursive(CurrentValue, DecodedValue)
+            if type(DecodedValue) == "table" and DecodedValue.Type == "Color3" and DecodedValue.Hex then
+                return Color3.fromHex(DecodedValue.Hex)
+            elseif type(CurrentValue) == "table" and type(DecodedValue) == "table" then
+                table.clear(CurrentValue)
+                for SubKey, SubValue in next, DecodedValue do
+                    CurrentValue[SubKey] = DeserializeRecursive(CurrentValue[SubKey], SubValue)
+                end
+                return CurrentValue
+            else
+                return DecodedValue
+            end
+        end
+
+        local function GetConfigurations()
+            if not isfolder(ConfigurationFolder) then makefolder(ConfigurationFolder) end
+            local Configurations = {}
+            for _, FilePath in ipairs(listfiles(ConfigurationFolder)) do
+                local Name = FilePath:match("([^/\\]+)$")
+                if Name and Name:match("%" .. Extension .. "$") then
+                    table.insert(Configurations, (Name:gsub("%" .. Extension .. "$", "")))
+                end
+            end
+            return Configurations
+        end
+
+        local function LoadConfigurationProfile(ProfileName)
+            local Path = ConfigurationFolder .. "/" .. ProfileName .. Extension
+            local Content = isfile(Path) and readfile(Path)
+            if not Content or #Content <= 0 then return end
+            local Success, Data = pcall(HttpService.JSONDecode, HttpService, Content)
+            if Success then
+                for _, Configuration in ipairs(TablesToSave) do
+                    for Setting in next, Configuration do
+                        if string.find(string.lower(Setting), "inactive") then continue end
+                        local Value = Data[Setting]
+                        if Value == nil then continue end
+                        Configuration[Setting] = DeserializeRecursive(Configuration[Setting], Value)
+                        task.defer(function()
+                            if Toggles[Setting] then
+                                Toggles[Setting]:SetValue(Configuration[Setting])
+                            elseif Options[Setting] then
+                                if Options[Setting].Type == "ColorPicker" then
+                                    Options[Setting]:SetValueRGB(Configuration[Setting], Data[Setting .. "Transparency"])
+                                elseif Options[Setting].Type == "KeyPicker" then
+                                    Options[Setting]:SetValue({Configuration[Setting], Data[Setting .. "Mode"] or "Toggle"})
+                                else
+                                    Options[Setting]:SetValue(Configuration[Setting])
+                                end
+                            end
+                        end)
+                    end
+                end
+            end
+        end
+
+        self:AddInput("ConfigurationInput", {
+            Text = "Configuration Profile",
+            Default = "",
+            Placeholder = "Name",
+            Numeric = false,
+            Finished = false,
+            Callback = function(Value) ConfigurationManager.CurrentConfigurationProfile = Value end,
+        })
+
+        self:AddDropdown("ConfigurationDropdown", {
+            Text = "Profiles",
+            Default = "",
+            Values = GetConfigurations(),
+            Callback = function(Value)
+                ConfigurationManager.CurrentConfigurationProfile = Value
+                if Options.ConfigurationInput then Options.ConfigurationInput:SetValue(Value) end
+                if ConfigurationManager.Buttons.SetAutoload and ConfigurationManager.Buttons.RemoveAutoload then
+                    local IsAutoload = isfile(AutoloadFile) and readfile(AutoloadFile) == Value
+                    ConfigurationManager.Buttons.SetAutoload.Outer.Visible = not IsAutoload
+                    ConfigurationManager.Buttons.RemoveAutoload.Outer.Visible = IsAutoload
+                end
+            end,
+        })
+
+        local function SaveConfigurationProfile()
+            local Name = ConfigurationManager.CurrentConfigurationProfile
+            if Name == "" then return end
+            local Data = {}
+            for _, TableOfSettings in ipairs(TablesToSave) do
+                for Setting, Value in next, TableOfSettings do
+                    if Setting == "MenuToggleKeybind" then continue end
+                    Data[Setting] = SerializeValue(Value)
+                end
+            end
+            for Index, Option in next, Library.Options do
+                if type(Option) == "table" and type(Option.Type) == "string" then
+                    if Option.Type == "KeyPicker" and type(Option.Mode) == "string" then
+                        Data[Index .. "Mode"] = Option.Mode
+                    elseif Option.Type == "ColorPicker" then
+                        Data[Index .. "Transparency"] = Option.Transparency or 0
+                    end
+                end
+            end
+            if not isfolder(ConfigurationFolder) then makefolder(ConfigurationFolder) end
+            writefile(ConfigurationFolder .. "/" .. Name .. Extension, HttpService:JSONEncode(Data))
+            Library:Notify("Saved Configuration Profile: " .. Name, 3)
+            Options.ConfigurationDropdown:SetValues(GetConfigurations())
+            Options.ConfigurationDropdown:SetValue(Name)
+        end
+
+        self:AddButton({ Text = "Save", Func = function() SaveConfigurationProfile() end }):AddButton({
+            Text = "Load",
+            Func = function()
+                local Name = ConfigurationManager.CurrentConfigurationProfile
+                if Name == "" then return end
+                LoadConfigurationProfile(Name)
+                Library:Notify("Loaded Configuration Profile: " .. Name, 3)
+            end,
+        })
+
+        self:AddButton({ Text = "Delete", Func = function()
+            local Name = ConfigurationManager.CurrentConfigurationProfile
+            if Name == "" then return end
+            local Path = ConfigurationFolder .. "/" .. Name .. Extension
+            if isfile(Path) then
+                delfile(Path)
+                Library:Notify("Deleted config: " .. Name, 3)
+                if isfile(AutoloadFile) and readfile(AutoloadFile) == Name then delfile(AutoloadFile) end
+                ConfigurationManager.CurrentConfigurationProfile = ""
+                Options.ConfigurationInput:SetValue("")
+                Options.ConfigurationDropdown:SetValues(GetConfigurations())
+                Options.ConfigurationDropdown:SetValue(nil)
+            end
+        end }):AddButton({
+            Text = "Refresh List",
+            Func = function() Options.ConfigurationDropdown:SetValues(GetConfigurations()) end,
+        })
+
+        ConfigurationManager.Buttons.SetAutoload = self:AddButton({ Text = "Set as Autoload", Func = function()
+            local Name = ConfigurationManager.CurrentConfigurationProfile
+            if Name == "" then return end
+            writefile(AutoloadFile, Name)
+            Library:Notify("Set " .. Name .. " as Autoload.", 3)
+            ConfigurationManager.Buttons.SetAutoload.Outer.Visible = false
+            ConfigurationManager.Buttons.RemoveAutoload.Outer.Visible = true
+        end })
+
+        ConfigurationManager.Buttons.RemoveAutoload = self:AddButton({ Text = "Remove Autoload", Func = function()
+            if isfile(AutoloadFile) then
+                delfile(AutoloadFile)
+                Library:Notify("Removed Configuration Profile from Autoload.", 3)
+            end
+            ConfigurationManager.Buttons.SetAutoload.Outer.Visible = true
+            ConfigurationManager.Buttons.RemoveAutoload.Outer.Visible = false
+        end })
+
+        ConfigurationManager.Buttons.RemoveAutoload.Outer.Visible = false
+
+        return function()
+            if isfile(AutoloadFile) then
+                local Name = readfile(AutoloadFile)
+                if Name and Name ~= "" then
+                    LoadConfigurationProfile(Name)
+                    Library:Notify("Profile '" .. Name .. "' was loaded successfully.", 3)
+                    Options.ConfigurationDropdown:SetValue(Name)
+                end
+            end
+        end
     end
 
     BaseGroupbox.__index = Funcs
@@ -1751,7 +1968,7 @@ do
 end
 
 -- ============================================================
--- HUD: Keybind list / Watermark / Notifications
+-- HUD: Notifications / Watermark / Keybind list
 -- ============================================================
 do
     Library.NotificationArea = Library:Create("Frame", {
@@ -1767,7 +1984,6 @@ do
         Parent = Library.NotificationArea,
     })
 
-    -- Watermark
     local WatermarkOuter = Library:Create("Frame", {
         BackgroundColor3 = Library.Border,
         BorderColor3 = Library.Border,
@@ -1794,7 +2010,6 @@ do
     Library.WatermarkText = WatermarkLabel
     Library:MakeDraggable(Library.Watermark)
 
-    -- Keybind list (bottom-left)
     local KeybindOuter = Library:Create("Frame", {
         AnchorPoint = Vector2.new(0, 0.5),
         BackgroundColor3 = Library.Border,
@@ -1819,7 +2034,7 @@ do
         ZIndex = 102, Parent = KeybindInner,
     })
 
-    local KeybindLabel = Library:CreateLabel({
+    Library:CreateLabel({
         Size = UDim2.new(1, 0, 0, 20),
         Position = UDim2.fromOffset(6, 2),
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -1876,7 +2091,7 @@ function Library:Notify(Text, Time)
     })
     Library:AddToRegistry(NotifyInner, { BackgroundColor3 = "SectionBG", BorderColor3 = "Outline" }, true)
 
-    local NotifyLabel = Library:CreateLabel({
+    Library:CreateLabel({
         Position = UDim2.new(0, 6, 0, 0),
         Size = UDim2.new(1, -4, 1, 0),
         Text = Text,
@@ -1901,15 +2116,14 @@ function Library:Notify(Text, Time)
 end
 
 -- ============================================================
--- Window & Tabs  — gamesense sidebar layout
+-- Window & Tabs (gamesense sidebar layout)
 -- ============================================================
 local TabIcons = {
-    -- fallback icons; user can pass their own
-    ["Aiming"]  = "rbxassetid://6031090990", -- crosshair
-    ["Visuals"] = "rbxassetid://6031094667", -- eye
-    ["World"]   = "rbxassetid://6031094682", -- sun
-    ["Miscellaneous"] = "rbxassetid://6031094660", -- gear
-    ["Settings"]= "rbxassetid://6031280882", -- wrench
+    ["Aiming"]        = "rbxassetid://6031090990",
+    ["Visuals"]       = "rbxassetid://6031094667",
+    ["World"]         = "rbxassetid://6031094682",
+    ["Miscellaneous"] = "rbxassetid://6031094660",
+    ["Settings"]      = "rbxassetid://6031280882",
 }
 
 function Library:CreateWindow(Configuration, _IsParallel)
@@ -1922,10 +2136,9 @@ function Library:CreateWindow(Configuration, _IsParallel)
 
     local Window = { Tabs = {} }
 
-    -- Outer
     local Outer = Library:Create("Frame", {
         AnchorPoint = Configuration.AnchorPoint,
-        BackgroundColor3 = Library.WindowBG,
+        BackgroundColor3 = Library.Border,
         BorderSizePixel = 0,
         Position = Configuration.Position,
         Size = Configuration.Size,
@@ -1934,31 +2147,22 @@ function Library:CreateWindow(Configuration, _IsParallel)
     })
     Library:MakeDraggable(Outer, 26)
 
-    -- Thin outer border like gamesense
-    local Border = Library:Create("Frame", {
-        BackgroundColor3 = Library.Border,
-        BorderSizePixel = 0,
-        Position = UDim2.new(0, 0, 0, 0),
-        Size = UDim2.new(1, 0, 1, 0),
-        ZIndex = 1, Parent = Outer,
-    })
     local BorderInner = Library:Create("Frame", {
         BackgroundColor3 = Library.WindowBG,
         BorderSizePixel = 0,
         Position = UDim2.new(0, 1, 0, 1),
         Size = UDim2.new(1, -2, 1, -2),
-        ZIndex = 2, Parent = Border,
+        ZIndex = 2, Parent = Outer,
     })
 
-    -- Header bar
+    -- top header bar
     local Header = Library:Create("Frame", {
-        BackgroundColor3 = Library.SectionBG,
+        BackgroundColor3 = Library.HeaderBG,
         BorderSizePixel = 0,
         Position = UDim2.new(0, 0, 0, 0),
         Size = UDim2.new(1, 0, 0, 24),
         ZIndex = 3, Parent = BorderInner,
     })
-
     local WindowLabel = Library:CreateLabel({
         Position = UDim2.new(0, 10, 0, 0),
         Size = UDim2.new(1, -80, 1, 0),
@@ -1970,7 +2174,7 @@ function Library:CreateWindow(Configuration, _IsParallel)
     })
     Library:AddToRegistry(WindowLabel, { TextColor3 = "Accent" })
 
-    -- Body: sidebar + main
+    -- body
     local Body = Library:Create("Frame", {
         BackgroundColor3 = Library.WindowBG,
         BorderSizePixel = 0,
@@ -2003,7 +2207,7 @@ function Library:CreateWindow(Configuration, _IsParallel)
         ZIndex = 4, Parent = Body,
     })
 
-    -- Sub-header (tab title bar like gamesense's "Weapon type / Aimbot / ..." strip)
+    -- sub-header strip showing active tab name
     local SubHeader = Library:Create("Frame", {
         BackgroundColor3 = Library.SectionBG,
         BorderSizePixel = 0,
@@ -2011,6 +2215,16 @@ function Library:CreateWindow(Configuration, _IsParallel)
         Size = UDim2.new(1, 0, 0, 20),
         ZIndex = 5, Parent = Content,
     })
+    local SubHeaderTitle = Library:CreateLabel({
+        Position = UDim2.new(0, 10, 0, 0),
+        Size = UDim2.new(1, -10, 1, 0),
+        Text = "",
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextSize = 12,
+        TextColor3 = Library.FontMuted,
+        ZIndex = 6, Parent = SubHeader,
+    })
+    Library:AddToRegistry(SubHeaderTitle, { TextColor3 = "FontMuted" })
 
     local TabContainer = Library:Create("Frame", {
         BackgroundTransparency = 1,
@@ -2024,7 +2238,7 @@ function Library:CreateWindow(Configuration, _IsParallel)
     function Window:AddTab(Name, Icon)
         local Tab = { Groupboxes = {}, Tabboxes = {} }
 
-        -- Sidebar icon button
+        -- sidebar icon
         local IconButton = Library:Create("Frame", {
             BackgroundColor3 = Library.SidebarBG,
             BorderSizePixel = 0,
@@ -2051,7 +2265,6 @@ function Library:CreateWindow(Configuration, _IsParallel)
         })
         Library:AddToRegistry(IconAccent, { BackgroundColor3 = "Accent" })
 
-        -- Tab frame
         local TabFrame = Library:Create("Frame", {
             Name = "TabFrame",
             BackgroundTransparency = 1,
@@ -2102,7 +2315,7 @@ function Library:CreateWindow(Configuration, _IsParallel)
             IconImage.ImageColor3 = Library.Accent
             Library.RegistryMap[IconImage].Properties.ImageColor3 = "Accent"
             TabFrame.Visible = true
-            SubHeader.Title.Text = Name  -- placeholder; we attach below
+            SubHeaderTitle.Text = Name
         end
         function Tab:HideTab()
             IconAccent.Visible = false
@@ -2112,20 +2325,6 @@ function Library:CreateWindow(Configuration, _IsParallel)
             TabFrame.Visible = false
         end
         function Tab:SetLayoutOrder(pos) IconButton.LayoutOrder = pos end
-
-        -- Sub-header title (created once, reused)
-        if not SubHeader.Title then
-            SubHeader.Title = Library:CreateLabel({
-                Position = UDim2.new(0, 10, 0, 0),
-                Size = UDim2.new(1, -10, 1, 0),
-                Text = "",
-                TextXAlignment = Enum.TextXAlignment.Left,
-                TextSize = 12,
-                TextColor3 = Library.FontMuted,
-                ZIndex = 6, Parent = SubHeader,
-            })
-            Library:AddToRegistry(SubHeader.Title, { TextColor3 = "FontMuted" })
-        end
 
         function Tab:AddGroupbox(Info)
             local Groupbox = {}
@@ -2137,8 +2336,7 @@ function Library:CreateWindow(Configuration, _IsParallel)
             })
             Library:AddToRegistry(BoxOuter, { BackgroundColor3 = "PanelBG" })
 
-            -- thin top border line
-            local TopLine = Library:Create("Frame", {
+            Library:Create("Frame", {
                 BackgroundColor3 = Library.Divider,
                 BorderSizePixel = 0,
                 Position = UDim2.new(0, 0, 0, 0),
@@ -2146,7 +2344,6 @@ function Library:CreateWindow(Configuration, _IsParallel)
                 ZIndex = 3, Parent = BoxOuter,
             })
 
-            -- header strip
             local HeaderStrip = Library:Create("Frame", {
                 BackgroundColor3 = Library.SectionBG,
                 BorderSizePixel = 0,
@@ -2332,7 +2529,6 @@ function Library:CreateWindow(Configuration, _IsParallel)
         return Tab
     end
 
-    -- Custom gamesense-style cursor
     local ToggledState = false
     local Fading = false
 
@@ -2350,7 +2546,8 @@ function Library:CreateWindow(Configuration, _IsParallel)
                 local Cursor = Drawing.new("Triangle")
                 Cursor.Thickness = 1; Cursor.Filled = true; Cursor.Visible = true
                 local Outline = Drawing.new("Triangle")
-                Outline.Thickness = 1; Outline.Filled = false; Outline.Color = Color3.new(0, 0, 0); Outline.Visible = true
+                Outline.Thickness = 1; Outline.Filled = false
+                Outline.Color = Color3.new(0, 0, 0); Outline.Visible = true
                 while ToggledState and ScreenGui.Parent do
                     UserInputService.MouseIconEnabled = false
                     local mp = UserInputService:GetMouseLocation()
